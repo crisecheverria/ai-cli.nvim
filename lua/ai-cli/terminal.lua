@@ -80,6 +80,13 @@ local function apply_terminal_window_style(target_win)
 
   vim.wo[target_win].winhighlight = "Normal:Normal,NormalNC:Normal,EndOfBuffer:Normal,SignColumn:Normal"
   vim.wo[target_win].winbar = ""
+  -- Remove all decorations so the full window width is available to the terminal
+  vim.wo[target_win].number = false
+  vim.wo[target_win].relativenumber = false
+  vim.wo[target_win].signcolumn = "no"
+  vim.wo[target_win].foldcolumn = "0"
+  vim.wo[target_win].statuscolumn = ""
+  vim.wo[target_win].winfixwidth = true
 end
 
 ---Synchronizes terminal color palette with the editor's background.
@@ -115,7 +122,8 @@ local function configure_terminal_buffer(target_buf)
 end
 
 local function get_split_width(effective_config)
-  return math.max(40, math.floor(vim.o.columns * effective_config.split_width_percentage))
+  local min_width = effective_config.min_width or 80
+  return math.max(min_width, math.floor(vim.o.columns * effective_config.split_width_percentage))
 end
 
 ---Resets internal state variables and cleans up autocommands.
@@ -186,11 +194,21 @@ local function normalize_terminal_windows(preferred_win, current_tab_only)
   return keep
 end
 
+local function sync_pty_size(target_win)
+  if not jobid or jobid <= 0 or not target_win or not vim.api.nvim_win_is_valid(target_win) then
+    return
+  end
+  local cols = vim.api.nvim_win_get_width(target_win)
+  local rows = vim.api.nvim_win_get_height(target_win)
+  pcall(vim.fn.jobresize, jobid, cols, rows)
+end
+
 local function refresh_window_layout(effective_config)
   local active_config = effective_config or config
   local visible_win = normalize_terminal_windows(nil, false)
   if visible_win and vim.api.nvim_win_is_valid(visible_win) and active_config then
     pcall(vim.api.nvim_win_set_width, visible_win, get_split_width(active_config))
+    sync_pty_size(visible_win)
   end
 end
 
@@ -354,6 +372,9 @@ local function show_hidden_terminal(effective_config, focus)
   vim.api.nvim_win_set_buf(new_winid, bufnr)
   winid = new_winid
   apply_terminal_window_style(new_winid)
+  -- Re-apply width after styling so the pty gets the correct column count
+  vim.api.nvim_win_set_width(new_winid, width)
+  sync_pty_size(new_winid)
   close_extra_terminal_windows()
 
   if focus then
@@ -394,6 +415,8 @@ function M.open(cmd_spec, env_table, effective_config, focus)
   local new_bufnr = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_win_set_buf(new_winid, new_bufnr)
   apply_terminal_window_style(new_winid)
+  -- Re-apply width after styling so the pty gets the correct column count
+  vim.api.nvim_win_set_width(new_winid, width)
 
   local term_cmd_arg = type(cmd_spec) == "table" and vim.deepcopy(cmd_spec)
     or vim.split(cmd_spec, " ", { plain = true, trimempty = true })
@@ -529,6 +552,36 @@ function M.close()
     vim.api.nvim_win_close(winid, true)
     cleanup_state()
   end
+end
+
+
+---Makes the terminal visible if it has an active buffer but is hidden.
+---@param effective_config table Layout configuration
+---@return boolean success
+function M.show(effective_config)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  if is_terminal_visible() then
+    return true
+  end
+  return show_hidden_terminal(effective_config, false)
+end
+
+---Focuses the terminal window and enters insert mode.
+---@return boolean success
+function M.focus()
+  if not is_valid() then
+    return false
+  end
+  focus_terminal()
+  return true
+end
+
+---Returns whether the terminal has an active process.
+---@return boolean
+function M.is_active()
+  return jobid ~= nil and jobid > 0 and bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr)
 end
 
 return M

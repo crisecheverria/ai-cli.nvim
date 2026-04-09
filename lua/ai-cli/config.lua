@@ -34,6 +34,7 @@ M.defaults = {
   terminal = {
     split_side = "right",
     split_width_percentage = 0.4,
+    min_width = 80,
     auto_close = true,
   },
   diff = {
