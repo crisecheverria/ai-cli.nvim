@@ -2,7 +2,7 @@
 
 Neovim integration for coding CLIs.
 
-`ai-cli.nvim` keeps a coding CLI available inside Neovim as a persistent side terminal and opens code suggestions in a reviewable unified diff inside your editor windows.
+`ai-cli.nvim` keeps a coding CLI available inside Neovim as a persistent side terminal and opens code suggestions in a reviewable diff inside your editor windows.
 
 https://github.com/user-attachments/assets/a4af46c6-eac8-4c2a-91d0-d57b0cb2b451
 
@@ -41,6 +41,7 @@ require("ai-cli").setup({
     auto_close = true,
   },
   diff = {
+    mode = "split",       -- "split" (side-by-side) or "unified" (single buffer)
     accept_key = "ga",
     reject_key = "gr",
   },
@@ -68,7 +69,8 @@ lua/ai-cli/providers/
 - Terminal session stays alive when you hide and reopen the side pane.
 - Terminal buffer is treated like a utility pane (`buflisted = false`, custom filetype).
 - Local bridge so the active CLI can open and resolve code suggestions directly in Neovim.
-- Unified diff review flow with editor-side accept/reject keymaps.
+- Side-by-side diff review using Neovim's native diff mode with character-level inline highlighting (best on Neovim 0.12+).
+- Unified diff review mode available as a fallback.
 - Deferred diff opening for files that are not currently visible.
 - Automatic buffer refresh when the CLI or external commands modify files on disk.
 - Editor-side acceptance and CLI-side approval flows both keep Neovim and the CLI in sync.
@@ -77,11 +79,31 @@ lua/ai-cli/providers/
 
 ## Code Suggestions
 
-When the active provider proposes an edit, the plugin opens a dedicated diff review in a temporary buffer.
+When the active provider proposes an edit, the plugin opens a diff review for you to inspect.
+
+### Diff modes
+
+The `diff.mode` option controls how diffs are displayed:
+
+**`"split"` (default)** — Opens two side-by-side buffers using Neovim's native diff mode (`diffthis`). Both sides use the file's real syntax highlighting. On **Neovim 0.12+**, this automatically benefits from:
+- `inline:char` — character-level highlighting within changed lines
+- `inline:word` — word-level highlighting (enable via `diffopt`)
+- `linematch:40` — smarter alignment of similar lines
+- `DiffTextAdd` — distinct highlight for purely added text
+- Unchanged regions are auto-folded; use `zo`/`zc` to toggle, `]c`/`[c` to jump between changes
+
+**`"unified"`** — Opens a single buffer with a traditional unified diff (`+`/`-` lines). This is the compact fallback if you prefer a single-pane view.
+
+### Keymaps
 
 - `ga` accepts the suggestion, writes it to disk, and updates any open buffers.
 - `gr` rejects the suggestion.
 - `q` closes the review and rejects it.
+
+In split mode, these keymaps work from either side of the diff.
+
+### Behavior
+
 - If the target file is not currently visible in Neovim, the suggestion is queued and automatically opens when you visit that file.
 - Opening the diff does not have to steal focus from the terminal pane.
 - If a suggested change is applied externally from the terminal pane, the diff view is resolved automatically.
@@ -177,6 +199,7 @@ require("ai-cli").setup({
     auto_close = true,
   },
   diff = {
+    mode = "split",
     accept_key = "ga",
     reject_key = "gr",
   },
@@ -213,6 +236,7 @@ require("ai-cli").setup({
     auto_close = true,
   },
   diff = {
+    mode = "split",
     accept_key = "ga",
     reject_key = "gr",
   },
@@ -248,6 +272,7 @@ require("ai-cli").setup({
     auto_close = true,
   },
   diff = {
+    mode = "split",
     accept_key = "ga",
     reject_key = "gr",
   },
@@ -273,7 +298,7 @@ Use this sequence for the first live test with Codex or Claude:
 1. Open a small file in Neovim that you can safely modify.
 2. Start the terminal with `:AiCliOpen`.
 3. In the terminal pane, ask the active CLI to make a small edit to the file that is already open.
-4. Watch for a diff review buffer to appear in Neovim instead of the file being edited directly on disk.
+4. Watch for a diff review to appear in Neovim instead of the file being edited directly on disk.
 5. Press `ga` to accept or `gr` to reject.
 6. If the diff does not appear and the file changes directly, the provider bypassed the MCP review flow.
 
@@ -284,7 +309,7 @@ Please make a tiny change to the currently open file by using the diff review to
 ```
 
 What success looks like:
-- the target file opens in a unified diff buffer
+- the target file opens in a side-by-side diff view (or a unified diff buffer if `mode = "unified"`)
 - the terminal stays open
 - accepting the diff writes the file and restores the original buffer
 - rejecting the diff leaves the file unchanged
@@ -329,7 +354,7 @@ Example key bindings:
 
 - The terminal pane is pinned to its own split and should stay separate from normal code windows.
 - Clicking buffer tabs while focus is inside the terminal should switch files in the code area, not replace the terminal buffer.
-- If the active provider suggests a change for a file you are not currently viewing, open that file and the unified diff should appear there.
+- If the active provider suggests a change for a file you are not currently viewing, open that file and the diff review should appear there.
 - You can review changes either from the editor with `ga` / `gr` or from the CLI with the built-in approval action.
 - Since the terminal window is a real split, manual mouse resizing works naturally.
 
@@ -339,7 +364,7 @@ The codebase is split into provider-agnostic editor modules and provider-specifi
 
 Provider-agnostic pieces:
 - `lua/ai-cli/terminal.lua` manages the pinned terminal split
-- `lua/ai-cli/diff.lua` owns the unified diff UI and pending diff queue
+- `lua/ai-cli/diff.lua` owns the diff review UI (split and unified modes) and pending diff queue
 - `lua/ai-cli/server.lua` owns the local bridge transport
 - `lua/ai-cli/init.lua` wires the active provider into the shared UI and sync flow
 

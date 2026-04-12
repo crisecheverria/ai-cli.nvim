@@ -274,8 +274,51 @@ local function cleanup_state(state)
     pcall(vim.api.nvim_del_augroup_by_id, state.group)
   end
 
+  if state.split_mode then
+    -- Turn off diff mode in both windows
+    for _, win in ipairs({ state.orig_diff_win, state.new_diff_win }) do
+      if win and vim.api.nvim_win_is_valid(win) then
+        pcall(function()
+          vim.api.nvim_win_call(win, function()
+            vim.cmd("diffoff")
+          end)
+        end)
+        pcall(function()
+          vim.wo[win].winbar = ""
+        end)
+      end
+    end
+
+    -- Close the proposed (right) split window
+    if state.new_diff_win and vim.api.nvim_win_is_valid(state.new_diff_win) then
+      pcall(vim.api.nvim_win_close, state.new_diff_win, true)
+    end
+
+    -- Clean up the proposed buffer
+    if state.new_diff_buf and vim.api.nvim_buf_is_valid(state.new_diff_buf) then
+      pcall(vim.api.nvim_buf_delete, state.new_diff_buf, { force = true })
+    end
+
+    -- Restore original buffer in the left window
+    if state.orig_diff_win and vim.api.nvim_win_is_valid(state.orig_diff_win) then
+      if state.original_buf and vim.api.nvim_buf_is_valid(state.original_buf) then
+        vim.api.nvim_win_set_buf(state.orig_diff_win, state.original_buf)
+        if state.original_cursor then
+          pcall(vim.api.nvim_win_set_cursor, state.orig_diff_win, state.original_cursor)
+        end
+      end
+    end
+
+    -- Clean up the original diff buffer
+    if state.orig_diff_buf and vim.api.nvim_buf_is_valid(state.orig_diff_buf) then
+      pcall(vim.api.nvim_buf_delete, state.orig_diff_buf, { force = true })
+    end
+
+    return
+  end
+
+  -- Unified mode cleanup
   if state.review_win and vim.api.nvim_win_is_valid(state.review_win) then
-    -- If the review was replacing an existing buffer, restore it
     if state.original_buf and vim.api.nvim_buf_is_valid(state.original_buf) then
       vim.api.nvim_win_set_buf(state.review_win, state.original_buf)
       if state.original_cursor then
@@ -324,6 +367,11 @@ local function stash_pending_state(state)
   state.original_cursor = nil
   state.review_buf = nil
   state.review_win = nil
+  state.split_mode = nil
+  state.orig_diff_buf = nil
+  state.new_diff_buf = nil
+  state.orig_diff_win = nil
+  state.new_diff_win = nil
   pending_diffs[state.old_file] = state
 end
 
@@ -470,8 +518,8 @@ function M.set_event_handler(handler)
   event_handler = handler
 end
 
----Internal helper to open the diff review UI.
-local function open_review(state, review_win)
+---Internal helper to open the unified diff review UI.
+local function open_unified_review(state, review_win)
   local previous_win = vim.api.nvim_get_current_win()
   local previous_buf = vim.api.nvim_win_is_valid(previous_win) and vim.api.nvim_win_get_buf(previous_win) or nil
   local previous_buftype = previous_buf and vim.bo[previous_buf].buftype or ""
@@ -526,6 +574,162 @@ local function open_review(state, review_win)
     end
   end
   logger.info("diff", "Opened diff for " .. vim.fn.fnamemodify(state.old_file, ":."))
+end
+
+---Internal helper to open a native side-by-side diff review.
+---Uses Neovim's built-in diff mode (diffthis) for comparison with
+---character-level inline highlighting (leverages Neovim 0.12+ inline:char/word).
+local function open_split_review(state, target_win)
+  local previous_win = vim.api.nvim_get_current_win()
+  local previous_buf = vim.api.nvim_win_is_valid(previous_win) and vim.api.nvim_win_get_buf(previous_win) or nil
+  local previous_buftype = previous_buf and vim.bo[previous_buf].buftype or ""
+  local original_buf = vim.api.nvim_win_get_buf(target_win)
+  local original_cursor = vim.api.nvim_win_get_cursor(target_win)
+  local original_content = read_file(state.old_file)
+
+  local filetype = vim.filetype.match({ filename = state.old_file }) or ""
+  local original_lines = split_lines(original_content)
+  local new_lines = split_lines(state.new_content)
+  local short_name = vim.fn.fnamemodify(state.old_file, ":.")
+
+  -- Create read-only buffer for original content (left side)
+  local orig_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(orig_buf, "ai-cli://original/" .. short_name)
+  vim.api.nvim_buf_set_lines(orig_buf, 0, -1, false, original_lines)
+  vim.bo[orig_buf].buftype = "nofile"
+  vim.bo[orig_buf].bufhidden = "wipe"
+  vim.bo[orig_buf].swapfile = false
+  vim.bo[orig_buf].modifiable = false
+  vim.bo[orig_buf].readonly = true
+  vim.bo[orig_buf].filetype = filetype
+
+  -- Create read-only buffer for proposed content (right side)
+  local new_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(new_buf, "ai-cli://proposed/" .. short_name)
+  vim.api.nvim_buf_set_lines(new_buf, 0, -1, false, new_lines)
+  vim.bo[new_buf].buftype = "nofile"
+  vim.bo[new_buf].bufhidden = "wipe"
+  vim.bo[new_buf].swapfile = false
+  vim.bo[new_buf].modifiable = false
+  vim.bo[new_buf].readonly = true
+  vim.bo[new_buf].filetype = filetype
+
+  -- Original on left in the target window
+  vim.api.nvim_set_current_win(target_win)
+  vim.api.nvim_win_set_buf(target_win, orig_buf)
+  vim.cmd("diffthis")
+
+  -- Proposed on right in a new vertical split
+  vim.cmd("rightbelow vsplit")
+  local new_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(new_win, new_buf)
+  vim.cmd("diffthis")
+
+  -- Window options for both sides
+  for _, win in ipairs({ target_win, new_win }) do
+    vim.wo[win].wrap = false
+    vim.wo[win].number = true
+    vim.wo[win].relativenumber = false
+    vim.wo[win].cursorline = true
+    vim.wo[win].signcolumn = "no"
+    vim.wo[win].winbar = " "
+  end
+  vim.wo[target_win].winbar = "%#Comment# Original: " .. short_name .. " %*"
+  vim.wo[new_win].winbar = "%#Comment# Proposed: " .. short_name .. " %*"
+
+  local unique_id = tostring(vim.uv.hrtime())
+
+  state.accepted = false
+  state.final_content = nil
+  state.group = vim.api.nvim_create_augroup("AiCliDiff" .. unique_id, { clear = true })
+  state.help_ns = vim.api.nvim_create_namespace("AiCliDiffHelp" .. unique_id)
+  state.original_buf = original_buf
+  state.original_content = original_content
+  state.original_cursor = original_cursor
+  state.review_buf = new_buf
+  state.review_win = target_win
+  state.split_mode = true
+  state.orig_diff_buf = orig_buf
+  state.new_diff_buf = new_buf
+  state.orig_diff_win = target_win
+  state.new_diff_win = new_win
+  state.resolved = false
+
+  active_diffs[state.old_file] = state
+  clear_pending(state.old_file)
+
+  -- Set keymaps on both buffers so accept/reject works from either side
+  set_keymaps(orig_buf, state)
+  set_keymaps(new_buf, state)
+
+  -- Render help overlay on both buffers
+  render_help(orig_buf, state)
+  render_help(new_buf, state)
+
+  -- If either buffer is wiped without a decision, clean up and stash as pending
+  local function on_wipeout()
+    if not active_diffs[state.old_file] or active_diffs[state.old_file].resolved then
+      return
+    end
+    local stashed = active_diffs[state.old_file]
+    active_diffs[state.old_file] = nil
+
+    -- Turn off diff mode and clear winbar on surviving windows
+    for _, win in ipairs({ state.orig_diff_win, state.new_diff_win }) do
+      if win and vim.api.nvim_win_is_valid(win) then
+        pcall(function()
+          vim.api.nvim_win_call(win, function()
+            vim.cmd("diffoff")
+          end)
+        end)
+        pcall(function()
+          vim.wo[win].winbar = ""
+        end)
+      end
+    end
+
+    -- Restore original buffer in the left window if still open
+    if state.orig_diff_win and vim.api.nvim_win_is_valid(state.orig_diff_win) then
+      if state.original_buf and vim.api.nvim_buf_is_valid(state.original_buf) then
+        pcall(vim.api.nvim_win_set_buf, state.orig_diff_win, state.original_buf)
+        if state.original_cursor then
+          pcall(vim.api.nvim_win_set_cursor, state.orig_diff_win, state.original_cursor)
+        end
+      end
+    end
+
+    stash_pending_state(stashed)
+    logger.info("diff", "Deferred diff for " .. short_name)
+  end
+
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = state.group,
+    buffer = orig_buf,
+    callback = on_wipeout,
+  })
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = state.group,
+    buffer = new_buf,
+    callback = on_wipeout,
+  })
+
+  -- Restore focus to the previous window (typically the terminal)
+  if vim.api.nvim_win_is_valid(previous_win) then
+    vim.api.nvim_set_current_win(previous_win)
+    if previous_buftype == "terminal" then
+      vim.cmd("startinsert")
+    end
+  end
+  logger.info("diff", "Opened split diff for " .. short_name)
+end
+
+---Dispatches to the appropriate review mode based on configuration.
+local function open_review(state, review_win)
+  local mode = ((M.config or {}).diff or {}).mode or "split"
+  if mode == "split" then
+    return open_split_review(state, review_win)
+  end
+  return open_unified_review(state, review_win)
 end
 
 local function schedule_pending_open(path)

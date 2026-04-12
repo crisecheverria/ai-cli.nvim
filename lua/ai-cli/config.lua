@@ -20,6 +20,7 @@ local M = {}
 ---@field auto_close boolean Whether to close the terminal window when the process exits
 
 ---@class AiCliDiffConfig
+---@field mode "unified"|"split" Diff display mode. "split" uses native side-by-side diff with inline highlighting (best on Neovim 0.12+).
 ---@field accept_key string Keybinding to apply changes in diff view
 ---@field reject_key string Keybinding to reject changes in diff view
 
@@ -38,6 +39,7 @@ M.defaults = {
     auto_close = true,
   },
   diff = {
+    mode = "split",
     accept_key = "ga",
     reject_key = "gr",
   },
@@ -77,6 +79,10 @@ function M.validate(config)
   assert(type(config.terminal.auto_close) == "boolean", "terminal.auto_close must be a boolean")
 
   assert(type(config.diff) == "table", "diff must be a table")
+  assert(
+    config.diff.mode == "unified" or config.diff.mode == "split",
+    "diff.mode must be 'unified' or 'split'"
+  )
   assert(type(config.diff.accept_key) == "string", "diff.accept_key must be a string")
   assert(type(config.diff.reject_key) == "string", "diff.reject_key must be a string")
 
